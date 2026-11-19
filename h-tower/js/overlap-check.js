@@ -8,6 +8,18 @@ const EPS = 0.20;          // contact slack, metres
 const AREA_MIN = 0.5;      // ignore sliver intersections smaller than this (m²)
 const PEN_MIN = 0.25;      // or penetration deeper than this (m)
 
+
+function worldTower() {
+  const builtW = S.FW || 22, builtD = S.FD || 14;
+  return {
+    tx: S.TOWER_X || 0,
+    tz: S.TOWER_Z || 0,
+    rot: S.TOWER_ROT != null ? S.TOWER_ROT : 138,
+    fw: S.TOWER_FW || builtW * (S.FOOTPRINT_SCALE || 1),
+    fd: S.TOWER_FD || builtD * (S.FOOTPRINT_SCALE || 1),
+  };
+}
+
 function rot(x, z, c, s) { return [x * c + z * s, -x * s + z * c]; }
 
 function towerCorners(tx, tz, deg, fw, fd) {
@@ -152,12 +164,10 @@ function collectBuildings() {
   const items = [];
 
   // H tower: exact rotated slab, not the loose world AABB of every floor mesh.
-  const fw = S.FW || 22, fd = S.FD || 14;
-  const rot = S.TOWER_ROT != null ? S.TOWER_ROT : 140;
-  const tx = S.TOWER_X || 0, tz = S.TOWER_Z || 0;
+  const tw = worldTower();
   items.push({
     id: 'h-tower', kind: 'building', group: 'placed',
-    pts: towerCorners(tx, tz, rot, fw, fd),
+    pts: towerCorners(tw.tx, tw.tz, tw.rot, tw.fw, tw.fd),
   });
 
   function addNamed(name, id) {
@@ -517,7 +527,8 @@ S.checkOverlaps = function checkOverlaps() {
 
   const hHits = overlaps.filter(o => o.a === 'h-tower' || o.b === 'h-tower');
   const result = {
-    ok: overlaps.length === 0,
+    ok: hHits.length === 0,
+    cityOk: overlaps.length === 0,
     overlaps: overlaps.length,
     hTowerOverlaps: hHits.length,
     buildings: buildings.length,
@@ -529,10 +540,270 @@ S.checkOverlaps = function checkOverlaps() {
   return result;
 };
 
+
+
+
+
+S.searchAspect = function searchAspect(opts) {
+  opts = opts || {};
+  const rot0 = opts.rot0 != null ? opts.rot0 : 138;
+  const rots = opts.rots || [rot0];
+  const fws = opts.fws || [];
+  const fds = opts.fds || [];
+  const spanX0 = opts.x0 != null ? opts.x0 : 4;
+  const spanX1 = opts.x1 != null ? opts.x1 : 12;
+  const spanZ0 = opts.z0 != null ? opts.z0 : -4;
+  const spanZ1 = opts.z1 != null ? opts.z1 : 4;
+  const posStep = opts.posStep || 0.25;
+  const insideOrig = opts.insideOrig !== false;
+  if (S.scene) S.scene.updateMatrixWorld(true);
+  const buildings = collectBuildings().filter(b => b.id !== 'h-tower');
+  const ways = collectWays();
+  const cityGrid = buildCityGrid();
+  const orig = towerCorners(0, 0, 138, 22, 14);
+
+  function hitsFor(tx, tz, rot, fw, fd) {
+    const pts = towerCorners(tx, tz, rot, fw, fd);
+    const aabb = aabbOf(pts);
+    const hits = [];
+    for (const B of buildings) {
+      if (!aabbHit(aabb, B.aabb, 0.5)) continue;
+      const r = satOverlap(pts, B.pts);
+      if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) return ['b'];
+    }
+    for (const way of ways) {
+      if (way.areaPts) {
+        const wAabb = aabbOf(way.areaPts);
+        if (!aabbHit(aabb, wAabb, (way.width || 0) / 2 + 0.5)) continue;
+        const r = satOverlap(pts, way.areaPts);
+        if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) return ['w'];
+      } else {
+        const pad = (way.width || 0) / 2 + 0.5;
+        let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+        for (const p of way.pts) {
+          if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+          if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+        }
+        if (!aabbHit(aabb, { minX: minX - pad, minZ: minZ - pad, maxX: maxX + pad, maxZ: maxZ + pad }, 0)) continue;
+        const r = obbVsPolyline(pts, way.pts, (way.width || 0) / 2);
+        if (r.hit) return ['w'];
+      }
+    }
+    const n = obbGridHits(cityGrid.grid, cityGrid.cols, cityGrid.rows, pts);
+    if (n >= 2) return ['c', n];
+    return [];
+  }
+
+  let best = null;
+  const tops = [];
+  for (const rot of rots) {
+    for (const fw of fws) {
+      for (const fd of fds) {
+        if (fw * fd < 40) continue;
+        for (let tx = spanX0; tx <= spanX1 + 1e-9; tx = +(tx + posStep).toFixed(3)) {
+          for (let tz = spanZ0; tz <= spanZ1 + 1e-9; tz = +(tz + posStep).toFixed(3)) {
+            if (insideOrig && !pointInConvex(orig, tx, tz)) continue;
+            const hits = hitsFor(tx, tz, rot, fw, fd);
+            if (hits.length) continue;
+            const rec = { tx, tz, rot, fw, fd, area: +(fw * fd).toFixed(2), dist: +Math.hypot(tx, tz).toFixed(3) };
+            if (!best || rec.area > best.area + 0.1 || (Math.abs(rec.area - best.area) < 0.1 && rec.dist < best.dist)) best = rec;
+            tops.push(rec);
+          }
+        }
+      }
+    }
+  }
+  tops.sort((a, b) => b.area - a.area || a.dist - b.dist);
+  const result = { best, tops: tops.slice(0, 25), nClear: tops.length };
+  window.__aspectSearch = result;
+  return result;
+};
+
+S.probeTower = function probeTower(tx, tz, k, rot) {
+  rot = rot != null ? rot : (S.TOWER_ROT != null ? S.TOWER_ROT : 138);
+  k = k == null ? (S.FOOTPRINT_SCALE || 1) : k;
+  const fw0 = S.FW || 22, fd0 = S.FD || 14;
+  if (S.scene) S.scene.updateMatrixWorld(true);
+  const buildings = collectBuildings().filter(b => b.id !== 'h-tower');
+  const ways = collectWays();
+  const cityGrid = buildCityGrid();
+  const pts = towerCorners(tx, tz, rot, fw0 * k, fd0 * k);
+  const aabb = aabbOf(pts);
+  const hits = [];
+  for (const B of buildings) {
+    if (!aabbHit(aabb, B.aabb, 0.5)) continue;
+    const r = satOverlap(pts, B.pts);
+    if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) hits.push({ b: B.id, kind: 'building-building', pen: +r.pen.toFixed(3), area: +r.area.toFixed(2) });
+  }
+  for (const way of ways) {
+    if (way.areaPts) {
+      const wAabb = aabbOf(way.areaPts);
+      if (!aabbHit(aabb, wAabb, (way.width || 0) / 2 + 0.5)) continue;
+      const r = satOverlap(pts, way.areaPts);
+      if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) hits.push({ b: way.id, kind: 'building-' + way.kind, pen: +r.pen.toFixed(3), area: +r.area.toFixed(2) });
+    } else {
+      const pad = (way.width || 0) / 2 + 0.5;
+      let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+      for (const p of way.pts) {
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+      }
+      if (!aabbHit(aabb, { minX: minX - pad, minZ: minZ - pad, maxX: maxX + pad, maxZ: maxZ + pad }, 0)) continue;
+      const r = obbVsPolyline(pts, way.pts, (way.width || 0) / 2);
+      if (r.hit) hits.push({ b: way.id, kind: 'building-' + way.kind, pen: +r.pen.toFixed(3), area: +(r.pen).toFixed(2) });
+    }
+  }
+  const n = obbGridHits(cityGrid.grid, cityGrid.cols, cityGrid.rows, pts);
+  if (n >= 2) hits.push({ b: 'city-grid', kind: 'building-city', pen: +(Math.sqrt(n) * CELL).toFixed(3), area: +(n * CELL * CELL).toFixed(2), cells: n });
+  return { tx, tz, k, rot, fw: +(fw0*k).toFixed(3), fd: +(fd0*k).toFixed(3), hits, corners: pts };
+};
+S.searchTowerSite = function searchTowerSite(opts) {
+  opts = opts || {};
+  const rot = opts.rot != null ? opts.rot : (S.TOWER_ROT != null ? S.TOWER_ROT : 138);
+  const fw0 = S.FW || 22, fd0 = S.FD || 14;
+  const kMin = opts.kMin || 0.35;
+  const kMax = opts.kMax != null ? opts.kMax : 1;
+  const kStep = opts.kStep || 0.05;
+  const span = opts.span != null ? opts.span : 12;
+  const posStep = opts.posStep || 0.5;
+  if (S.scene) S.scene.updateMatrixWorld(true);
+  const buildings = collectBuildings().filter(b => b.id !== 'h-tower');
+  const ways = collectWays();
+  const cityGrid = buildCityGrid();
+
+  function hitsFor(tx, tz, k) {
+    const pts = towerCorners(tx, tz, rot, fw0 * k, fd0 * k);
+    const aabb = aabbOf(pts);
+    const hits = [];
+    for (const B of buildings) {
+      if (!aabbHit(aabb, B.aabb, 0.5)) continue;
+      const r = satOverlap(pts, B.pts);
+      if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) {
+        hits.push({ b: B.id, kind: 'building-building', pen: +r.pen.toFixed(3), area: +r.area.toFixed(2) });
+      }
+    }
+    for (const way of ways) {
+      if (way.areaPts) {
+        const wAabb = aabbOf(way.areaPts);
+        if (!aabbHit(aabb, wAabb, (way.width || 0) / 2 + 0.5)) continue;
+        const r = satOverlap(pts, way.areaPts);
+        if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) {
+          hits.push({ b: way.id, kind: 'building-' + way.kind, pen: +r.pen.toFixed(3), area: +r.area.toFixed(2) });
+        }
+      } else {
+        const pad = (way.width || 0) / 2 + 0.5;
+        let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+        for (const p of way.pts) {
+          if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+          if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+        }
+        if (!aabbHit(aabb, { minX: minX - pad, minZ: minZ - pad, maxX: maxX + pad, maxZ: maxZ + pad }, 0)) continue;
+        const r = obbVsPolyline(pts, way.pts, (way.width || 0) / 2);
+        if (r.hit) hits.push({ b: way.id, kind: 'building-' + way.kind, pen: +r.pen.toFixed(3), area: +(r.pen).toFixed(2) });
+      }
+    }
+    const n = obbGridHits(cityGrid.grid, cityGrid.cols, cityGrid.rows, pts);
+    if (n >= 2) {
+      hits.push({ b: 'city-grid', kind: 'building-city', pen: +(Math.sqrt(n) * CELL).toFixed(3), area: +(n * CELL * CELL).toFixed(2), cells: n });
+    }
+    return hits;
+  }
+
+  const found = [];
+  for (let k = kMax; k + 1e-9 >= kMin; k = +(k - kStep).toFixed(4)) {
+    const locals = [];
+    for (let tx = -span; tx <= span + 1e-9; tx = +(tx + posStep).toFixed(3)) {
+      for (let tz = -span; tz <= span + 1e-9; tz = +(tz + posStep).toFixed(3)) {
+        const hits = hitsFor(tx, tz, k);
+        if (!hits.length) {
+          const dist = Math.hypot(tx, tz);
+          locals.push({ k: +k.toFixed(4), fw: +(fw0 * k).toFixed(3), fd: +(fd0 * k).toFixed(3), tx, tz, dist: +dist.toFixed(3) });
+        }
+      }
+    }
+    locals.sort((a, b) => a.dist - b.dist || a.tx * a.tx + a.tz * a.tz);
+    if (locals.length) {
+      found.push({ k: +k.toFixed(4), count: locals.length, best: locals[0], near: locals.slice(0, 8) });
+      // Once we have a reasonably large k with a close pose, we can still
+      // continue to list smaller k's best, but we already have what we need.
+    }
+  }
+  const result = { rot, fw0, fd0, found, best: found[0] ? found[0].best : null };
+  window.__siteSearch = result;
+  return result;
+};
+
+S.scanTowerFit = function scanTowerFit(opts) {
+  opts = opts || {};
+  const kMin = opts.kMin || 0.2;
+  const kMax = opts.kMax != null ? opts.kMax : 1;
+  const step = opts.step || 0.02;
+  const rot = S.TOWER_ROT != null ? S.TOWER_ROT : 138;
+  const tx = S.TOWER_X || 0, tz = S.TOWER_Z || 0;
+  const fw0 = S.FW || 22, fd0 = S.FD || 14;
+  if (S.scene) S.scene.updateMatrixWorld(true);
+  const buildings = collectBuildings().filter(b => b.id !== 'h-tower');
+  const ways = collectWays();
+  const cityGrid = buildCityGrid();
+  const rows = [];
+  let firstClear = null;
+  for (let k = kMax; k + 1e-9 >= kMin; k = +(k - step).toFixed(4)) {
+    const pts = towerCorners(tx, tz, rot, fw0 * k, fd0 * k);
+    const aabb = aabbOf(pts);
+    const hits = [];
+    for (const B of buildings) {
+      if (!aabbHit(aabb, B.aabb, 0.5)) continue;
+      const r = satOverlap(pts, B.pts);
+      if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) {
+        hits.push({ b: B.id, kind: 'building-building', pen: +r.pen.toFixed(3), area: +r.area.toFixed(2) });
+      }
+    }
+    for (const way of ways) {
+      if (way.areaPts) {
+        const wAabb = aabbOf(way.areaPts);
+        if (!aabbHit(aabb, wAabb, (way.width || 0) / 2 + 0.5)) continue;
+        const r = satOverlap(pts, way.areaPts);
+        if (r.hit && (r.area >= AREA_MIN || r.pen >= PEN_MIN)) {
+          hits.push({ b: way.id, kind: 'building-' + way.kind, pen: +r.pen.toFixed(3), area: +r.area.toFixed(2) });
+        }
+      } else {
+        const pad = (way.width || 0) / 2 + 0.5;
+        let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+        for (const p of way.pts) {
+          if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+          if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+        }
+        if (!aabbHit(aabb, { minX: minX - pad, minZ: minZ - pad, maxX: maxX + pad, maxZ: maxZ + pad }, 0)) continue;
+        const r = obbVsPolyline(pts, way.pts, (way.width || 0) / 2);
+        if (r.hit) hits.push({ b: way.id, kind: 'building-' + way.kind, pen: +r.pen.toFixed(3), area: +(r.pen).toFixed(2) });
+      }
+    }
+    const n = obbGridHits(cityGrid.grid, cityGrid.cols, cityGrid.rows, pts);
+    if (n >= 2) {
+      hits.push({ b: 'city-grid', kind: 'building-city', pen: +(Math.sqrt(n) * CELL).toFixed(3), area: +(n * CELL * CELL).toFixed(2), cells: n });
+    }
+    const row = { k: +k.toFixed(4), fw: +(fw0 * k).toFixed(3), fd: +(fd0 * k).toFixed(3), hits: hits.length, items: hits };
+    rows.push(row);
+    if (!hits.length && !firstClear) firstClear = row;
+  }
+  const result = {
+    rot, tx, tz, fw0, fd0,
+    firstClear,
+    rows,
+  };
+  window.__fitReport = result;
+  return result;
+};
+
 if (typeof window !== 'undefined') {
   window.__checkOverlaps = S.checkOverlaps;
+  window.__scanTowerFit = S.scanTowerFit;
+  window.__searchTowerSite = S.searchTowerSite;
+  window.__probeTower = S.probeTower;
+  window.__searchAspect = S.searchAspect;
   window.__towerCorners = function () {
-    return towerCorners(S.TOWER_X, S.TOWER_Z, S.TOWER_ROT || 140, S.FW || 22, S.FD || 14);
+    const tw = worldTower();
+    return towerCorners(tw.tx, tw.tz, tw.rot, tw.fw, tw.fd);
   };
 }
 

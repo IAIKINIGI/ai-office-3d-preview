@@ -1,5 +1,15 @@
 # City plan coordinates
 
+The H office tower now occupies a **12 × 6 m** slab at world `(10, 2)`, rotated **128°** (door is local +Z). That pose sits inside the original 22 × 14 m footprint at the origin (the official magenta rectangle on the earlier plans), in the gap between the central mid-rises and the eastern civic circle. The city mesh, roads, highway, and ATOM tower are unchanged from main. The decorative 14 m neon plaza ring around the old base has been removed.
+
+To verify the H tower is clear of other buildings, the highway, rails, and roads:
+
+```
+python3 tools/check-overlaps.py
+```
+
+The script exits 0 when the H tower has no overlaps. Any pre-existing overlaps elsewhere in the original map are listed and left untouched.
+
 Both `city-plan-blank.png` and `city-plan-current-roads.png` are the same 2048×2048 orthographic frame. North is up. World +X is right (east). World +Z is down (south), so world −Z is north.
 
 The view is a 210 m square. One pixel is `210 / 2048` metres.
@@ -24,19 +34,8 @@ px = (worldX - x0) / metersPerPixel - 0.5
 py = (worldZ - z0) / metersPerPixel - 0.5
 ```
 
-Grid lines are every 10 m, on multiples of 10. The labels are those world coordinates. The scale bar is 50 m. The office tower footprint is the magenta rectangle at the origin (22 m by 14 m). Open ground is white. Block footprints are mid-grey with a thin outline.
+Grid lines are every 10 m, on multiples of 10. The labels are those world coordinates. The scale bar is 50 m. The office tower footprint is the magenta rectangle (12 m by 6 m, rotated 128°) at world (10, 2), inside the original origin plot. Open ground is white. Block footprints are mid-grey with a thin outline.
 
 `city-plan-blank.png` has no generated roads. Grey paths inside the blocks are the city mesh itself. `city-plan-current-roads.png` adds the current avenue, lane pieces, and flyover in darker grey, with sidewalks lighter grey.
 
 A stroke drawn on either PNG converts to a road centreline by sampling pixels along the stroke and applying the formula above. Use the pixel centre (`+ 0.5`). Y on the image increases downward and maps to increasing world Z.
-
-
-`city-plan.png` is the same 210 m frame after the H office tower moved to the
-west empty plot (centre at x = −39 m, z = −0.5 m, rotated 140°). The circular
-civic rotunda and its kerb that previously sat in that lot were removed, and a
-few small original buildings were shifted so the 22×14 m footprint (magenta)
-clears the highway off-ramp and every neighbouring building. The gold square at
-(42.4, −37.2) is ATOM. Both are labelled. The highway is drawn as a road band
-(asphalt + markings), not as a diagnostic deck-edge overlay.
-`window.__renderCityPlan(true)` writes this frame. Run `window.__checkOverlaps()`
-(or `python3 tools/check-overlaps.py`) for the automated OBB overlap report.

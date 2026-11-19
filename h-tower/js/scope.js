@@ -1,9 +1,14 @@
 export const S = {};
 
-// World position of the H office tower (metres). The footprint is a 22×14 m
-// slab rotated 140°. This is the west empty plot, north of the highway off-
-// ramp that swings into the lot, west of the central roads, and south of the
-// small northern blocks. ATOM stays at (42.4, -37.2).
-S.TOWER_X = -39;
-S.TOWER_Z = -0.5;
-S.TOWER_ROT = 140; // degrees; door (local +Z) faces north-east toward the existing road
+// H office tower stays on the original central plot (it was at the origin
+// on main, rotated 138°, 22×14 m). That exact pose sits on top of original
+// mid-rise blocks, so the tower is shrunk and slid to the only clear pocket
+// still inside the original 22×14 footprint: the gap between those blocks
+// and the eastern civic circle. The city GLB, roads, highway, and ATOM are
+// unchanged. The decorative 14 m plaza ring that used to circle the old
+// base has been removed.
+S.TOWER_X = 10;
+S.TOWER_Z = 2;
+S.TOWER_ROT = 128; // degrees; was 138. Door is local +Z.
+S.TOWER_FW = 12;   // world footprint (metres). Built locally at 22×14, then scaled.
+S.TOWER_FD = 6;
